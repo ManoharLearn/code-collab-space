@@ -53,7 +53,7 @@ export function useRoom() {
   return ctx;
 }
 
-let nextId = 1;
+let nextId = 100;
 const genId = () => String(nextId++);
 
 // Create some demo rooms
