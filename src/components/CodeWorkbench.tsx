@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react";
 import { useRoom } from "@/context/RoomContext";
-import { Play } from "lucide-react";
+import { LANGUAGES, type LanguageId } from "@/data/problems";
+import { Play, ChevronDown } from "lucide-react";
 
 interface TestResult {
   id: string;
@@ -12,13 +13,23 @@ interface TestResult {
 
 export default function CodeWorkbench() {
   const { currentRoom, updateTestResults } = useRoom();
-  const [code, setCode] = useState(currentRoom?.problems[0]?.starterCode || "");
+  const [language, setLanguage] = useState<LanguageId>("javascript");
+  const [codeMap, setCodeMap] = useState<Record<string, string>>({});
   const [consoleOutput, setConsoleOutput] = useState<string[]>([]);
   const [testResults, setTestResults] = useState<TestResult[]>([]);
   const [isRunning, setIsRunning] = useState(false);
+  const [showLangMenu, setShowLangMenu] = useState(false);
   const [activeProblemIdx] = useState(0);
 
   const problem = currentRoom?.problems[activeProblemIdx];
+  const codeKey = `${problem?.id}-${language}`;
+  const code = codeMap[codeKey] ?? (problem?.starterCode[language] || "");
+
+  const setCode = (val: string) => {
+    setCodeMap((prev) => ({ ...prev, [codeKey]: val }));
+  };
+
+  const currentLang = LANGUAGES.find((l) => l.id === language)!;
 
   const runCode = useCallback(() => {
     if (!problem) return;
@@ -26,15 +37,37 @@ export default function CodeWorkbench() {
     setConsoleOutput([]);
     setTestResults([]);
 
+    // For JS/TS, run locally. For other languages, show a message about Judge0.
+    if (language !== "javascript" && language !== "typescript") {
+      setTimeout(() => {
+        setConsoleOutput([
+          `Running ${currentLang.name} requires a code execution backend.`,
+          "",
+          "To enable multi-language execution:",
+          "1. Self-host Judge0 CE (https://github.com/judge0/judge0)",
+          `2. Or use the public API with language ID: ${currentLang.judge0Id}`,
+          "",
+          "The backend server supports forwarding to Judge0.",
+          "Set JUDGE0_URL in your server environment.",
+          "",
+          "For now, JavaScript execution is available locally.",
+        ]);
+        setIsRunning(false);
+      }, 300);
+      return;
+    }
+
     setTimeout(() => {
       const logs: string[] = [];
       const results: TestResult[] = [];
 
       try {
-        // Simple evaluation sandbox
+        const fnNameMatch = problem.starterCode.javascript.match(/function\s+(\w+)/);
+        const fnName = fnNameMatch?.[1];
+
         const fn = new Function(
           "console",
-          code + `\nreturn typeof ${problem.starterCode.match(/function\s+(\w+)/)?.[1]} !== 'undefined' ? ${problem.starterCode.match(/function\s+(\w+)/)?.[1]} : null;`
+          code + (fnName ? `\nreturn typeof ${fnName} !== 'undefined' ? ${fnName} : null;` : "\nreturn null;")
         );
 
         const mockConsole = {
@@ -50,33 +83,16 @@ export default function CodeWorkbench() {
         } else {
           problem.testCases.forEach((tc, i) => {
             try {
-              // Parse input - simple approach
               const args = tc.input.split("\n").map((line) => {
-                try {
-                  return JSON.parse(line);
-                } catch {
-                  return line;
-                }
+                try { return JSON.parse(line); } catch { return line; }
               });
               const result = userFn(...args);
               const resultStr = JSON.stringify(result) ?? String(result);
               const passed = resultStr === tc.expectedOutput;
-              results.push({
-                id: tc.id,
-                passed,
-                input: tc.input,
-                expected: tc.expectedOutput,
-                actual: resultStr,
-              });
+              results.push({ id: tc.id, passed, input: tc.input, expected: tc.expectedOutput, actual: resultStr });
               logs.push(`Test ${i + 1}: ${passed ? "PASSED ✓" : "FAILED ✗"} | Expected: ${tc.expectedOutput} | Got: ${resultStr}`);
             } catch (err) {
-              results.push({
-                id: tc.id,
-                passed: false,
-                input: tc.input,
-                expected: tc.expectedOutput,
-                actual: String(err),
-              });
+              results.push({ id: tc.id, passed: false, input: tc.input, expected: tc.expectedOutput, actual: String(err) });
               logs.push(`Test ${i + 1}: ERROR - ${err}`);
             }
           });
@@ -87,14 +103,11 @@ export default function CodeWorkbench() {
 
       setConsoleOutput(logs);
       setTestResults(results);
-
       const passed = results.filter((r) => r.passed).length;
-      const total = results.length;
-      updateTestResults(passed, total);
-
+      updateTestResults(passed, results.length);
       setIsRunning(false);
     }, 300);
-  }, [code, problem, updateTestResults]);
+  }, [code, problem, updateTestResults, language, currentLang]);
 
   if (!problem) return null;
 
@@ -104,7 +117,39 @@ export default function CodeWorkbench() {
     <div className="flex h-full flex-col">
       {/* Toolbar */}
       <div className="flex items-center justify-between border-b border-border px-4 py-2">
-        <span className="text-xs text-muted-foreground font-mono">{problem.title}</span>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-muted-foreground font-mono">{problem.title}</span>
+
+          {/* Language selector */}
+          <div className="relative">
+            <button
+              onClick={() => setShowLangMenu(!showLangMenu)}
+              className="flex items-center gap-1 rounded border border-border bg-background px-2 py-1 text-[11px] font-medium text-foreground hover:bg-muted transition-colors"
+            >
+              {currentLang.name}
+              <ChevronDown className="h-3 w-3 text-muted-foreground" />
+            </button>
+            {showLangMenu && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setShowLangMenu(false)} />
+                <div className="absolute left-0 top-full z-50 mt-1 rounded border border-border bg-surface py-1 shadow-lg min-w-[140px]">
+                  {LANGUAGES.map((lang) => (
+                    <button
+                      key={lang.id}
+                      onClick={() => { setLanguage(lang.id); setShowLangMenu(false); }}
+                      className={`w-full px-3 py-1.5 text-left text-xs transition-colors ${
+                        lang.id === language ? "text-primary bg-primary/5" : "text-foreground hover:bg-muted/50"
+                      }`}
+                    >
+                      {lang.name}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
         <button
           onClick={runCode}
           disabled={isRunning}
@@ -128,9 +173,7 @@ export default function CodeWorkbench() {
       {/* Console output */}
       <div className="border-t border-border" style={{ height: "35%" }}>
         <div className="flex items-center justify-between border-b border-border px-4 py-1.5">
-          <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-            Console
-          </span>
+          <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Console</span>
           {testResults.length > 0 && (
             <span className={`text-[10px] font-mono ${passedCount === testResults.length ? "text-success" : "text-destructive"}`}>
               {passedCount}/{testResults.length} passed
