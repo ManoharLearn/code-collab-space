@@ -74,6 +74,50 @@ setInterval(() => {
   }
 }, 300000);
 
+// ─── Judge0 Code Execution ─────────────────────────────────────────────────────
+const JUDGE0_URL = process.env.JUDGE0_URL || "";
+const JUDGE0_API_KEY = process.env.JUDGE0_API_KEY || "";
+
+app.post("/api/execute", async (req, res) => {
+  if (!JUDGE0_URL) {
+    return res.status(503).json({
+      error: "Judge0 not configured. Set JUDGE0_URL environment variable.",
+      hint: "Self-host: docker-compose up from https://github.com/judge0/judge0 | Or use RapidAPI: https://rapidapi.com/judge0-official/api/judge0-ce",
+    });
+  }
+
+  const { source_code, language_id, stdin } = req.body;
+  if (!source_code || !language_id) {
+    return res.status(400).json({ error: "source_code and language_id are required" });
+  }
+
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (JUDGE0_API_KEY) {
+      headers["X-RapidAPI-Key"] = JUDGE0_API_KEY;
+      headers["X-RapidAPI-Host"] = "judge0-ce.p.rapidapi.com";
+    }
+
+    // Submit
+    const submitRes = await fetch(`${JUDGE0_URL}/submissions?base64_encoded=false&wait=true&fields=stdout,stderr,status,compile_output,time,memory`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ source_code, language_id, stdin: stdin || "" }),
+    });
+
+    if (!submitRes.ok) {
+      const text = await submitRes.text();
+      return res.status(submitRes.status).json({ error: `Judge0 error: ${text}` });
+    }
+
+    const result = await submitRes.json();
+    res.json(result);
+  } catch (err) {
+    console.error("Judge0 execution error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── REST endpoints ────────────────────────────────────────────────────────────
 app.get("/api/rooms", (req, res) => {
   const list = Array.from(rooms.values()).map((r) => ({
