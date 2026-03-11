@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from "react";
 import { Problem, PROBLEMS } from "@/data/problems";
+import { connectSocket, disconnectSocket, getSocket } from "@/lib/socket";
 
 export interface Participant {
   id: string;
@@ -7,7 +8,7 @@ export interface Participant {
   status: "active" | "idle";
   testsPassed: number;
   totalTests: number;
-  solvedAt?: number; // timestamp when all tests passed
+  solvedAt?: number;
 }
 
 export interface ChatMessage {
@@ -23,7 +24,7 @@ export interface Room {
   problems: Problem[];
   participants: Participant[];
   hostId: string;
-  timerSeconds: number | null; // null = no timer
+  timerSeconds: number | null;
   timerRemaining: number | null;
   isActive: boolean;
   chat: ChatMessage[];
@@ -31,18 +32,30 @@ export interface Room {
   resultsShown: boolean;
 }
 
+export interface RoomSummary {
+  id: string;
+  name: string;
+  problemTitles: string[];
+  participantCount: number;
+  timerRemaining: number | null;
+  timerSeconds: number | null;
+  isActive: boolean;
+  createdAt: number;
+}
+
 interface RoomContextType {
-  rooms: Room[];
+  rooms: RoomSummary[];
   currentUser: { id: string; username: string } | null;
   currentRoom: Room | null;
   login: (username: string) => void;
   logout: () => void;
-  createRoom: (name: string, problemIds: string[], timerMinutes: number | null) => string;
+  createRoom: (name: string, problemIds: string[], timerMinutes: number | null) => void;
   joinRoom: (roomId: string) => void;
   leaveRoom: () => void;
   sendMessage: (text: string) => void;
   updateTestResults: (passed: number, total: number) => void;
   declareResults: () => void;
+  connected: boolean;
 }
 
 const RoomContext = createContext<RoomContextType | null>(null);
@@ -53,117 +66,125 @@ export function useRoom() {
   return ctx;
 }
 
-let nextId = 100;
-const genId = () => String(nextId++);
-
-// Create some demo rooms
-const demoParticipants: Participant[] = [
-  { id: "bot1", username: "alice_dev", status: "active", testsPassed: 2, totalTests: 3 },
-  { id: "bot2", username: "bob_codes", status: "active", testsPassed: 0, totalTests: 3 },
-  { id: "bot3", username: "charlie_py", status: "idle", testsPassed: 3, totalTests: 3, solvedAt: Date.now() - 60000 },
-];
-
-const initialRooms: Room[] = [
-  {
-    id: "room-1",
-    name: "Morning Warmup",
-    problems: [PROBLEMS[0], PROBLEMS[1]],
-    participants: [demoParticipants[0], demoParticipants[1]],
-    hostId: "bot1",
-    timerSeconds: 1800,
-    timerRemaining: 1243,
-    isActive: true,
-    chat: [],
-    createdAt: Date.now() - 300000,
-    resultsShown: false,
-  },
-  {
-    id: "room-2",
-    name: "Array Mastery",
-    problems: [PROBLEMS[6], PROBLEMS[7]],
-    participants: [demoParticipants[2]],
-    hostId: "bot3",
-    timerSeconds: null,
-    timerRemaining: null,
-    isActive: true,
-    chat: [],
-    createdAt: Date.now() - 120000,
-    resultsShown: false,
-  },
-  {
-    id: "room-3",
-    name: "Interview Prep Sprint",
-    problems: [PROBLEMS[3], PROBLEMS[4], PROBLEMS[0]],
-    participants: [demoParticipants[0], demoParticipants[1], demoParticipants[2]],
-    hostId: "bot1",
-    timerSeconds: 3600,
-    timerRemaining: 2890,
-    isActive: true,
-    chat: [],
-    createdAt: Date.now() - 600000,
-    resultsShown: false,
-  },
-];
-
 export function RoomProvider({ children }: { children: React.ReactNode }) {
-  const [rooms, setRooms] = useState<Room[]>(initialRooms);
+  const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [currentUser, setCurrentUser] = useState<{ id: string; username: string } | null>(null);
-  const [currentRoomId, setCurrentRoomId] = useState<string | null>(null);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [currentRoom, setCurrentRoom] = useState<Room | null>(null);
+  const [connected, setConnected] = useState(false);
+  const fetchingRef = useRef(false);
 
-  const currentRoom = rooms.find((r) => r.id === currentRoomId) || null;
-
-  // Timer tick
-  useEffect(() => {
-    if (timerRef.current) clearInterval(timerRef.current);
-    timerRef.current = setInterval(() => {
-      setRooms((prev) =>
-        prev.map((r) => {
-          if (r.isActive && r.timerRemaining !== null && r.timerRemaining > 0) {
-            const next = r.timerRemaining - 1;
-            if (next <= 0) {
-              return { ...r, timerRemaining: 0, isActive: false, resultsShown: true };
-            }
-            return { ...r, timerRemaining: next };
-          }
-          return r;
-        })
-      );
-    }, 1000);
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  // Fetch room list from REST API
+  const fetchRooms = useCallback(async () => {
+    if (fetchingRef.current) return;
+    fetchingRef.current = true;
+    try {
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
+      const res = await fetch(`${backendUrl}/api/rooms`);
+      if (res.ok) {
+        const data = await res.json();
+        setRooms(data);
+      }
+    } catch (e) {
+      console.error("Failed to fetch rooms:", e);
+    } finally {
+      fetchingRef.current = false;
+    }
   }, []);
 
+  // Setup socket listeners
+  useEffect(() => {
+    const socket = connectSocket();
+
+    socket.on("connect", () => {
+      setConnected(true);
+      fetchRooms();
+    });
+
+    socket.on("disconnect", () => setConnected(false));
+
+    // When any room list changes, re-fetch
+    socket.on("rooms:updated", () => {
+      fetchRooms();
+    });
+
+    // Timer ticks
+    socket.on("timer:tick", ({ remaining }: { remaining: number }) => {
+      setCurrentRoom((prev) => prev ? { ...prev, timerRemaining: remaining } : null);
+    });
+
+    // Chat messages
+    socket.on("chat:message", (msg: ChatMessage) => {
+      setCurrentRoom((prev) => prev ? { ...prev, chat: [...prev.chat, msg] } : null);
+    });
+
+    // Participant joined
+    socket.on("room:participant_joined", ({ participants }: { participants: Participant[] }) => {
+      setCurrentRoom((prev) => prev ? { ...prev, participants } : null);
+    });
+
+    // Participant left
+    socket.on("room:participant_left", ({ participants, newHostId }: { participants: Participant[]; newHostId: string }) => {
+      setCurrentRoom((prev) => prev ? { ...prev, participants, hostId: newHostId } : null);
+    });
+
+    // Participants updated (test results)
+    socket.on("room:participants_updated", ({ participants }: { participants: Participant[] }) => {
+      setCurrentRoom((prev) => prev ? { ...prev, participants } : null);
+    });
+
+    // Room ended
+    socket.on("room:ended", ({ ranked, roomId }: { ranked: Participant[]; roomId: string }) => {
+      setCurrentRoom((prev) => {
+        if (!prev || prev.id !== roomId) return prev;
+        return { ...prev, isActive: false, resultsShown: true, participants: ranked };
+      });
+    });
+
+    // Initial fetch
+    fetchRooms();
+
+    return () => {
+      socket.off("connect");
+      socket.off("disconnect");
+      socket.off("rooms:updated");
+      socket.off("timer:tick");
+      socket.off("chat:message");
+      socket.off("room:participant_joined");
+      socket.off("room:participant_left");
+      socket.off("room:participants_updated");
+      socket.off("room:ended");
+    };
+  }, [fetchRooms]);
+
   const login = useCallback((username: string) => {
-    setCurrentUser({ id: genId(), username });
+    const socket = getSocket();
+    socket.emit("user:login", { username }, (response: { id: string; username: string }) => {
+      setCurrentUser(response);
+    });
   }, []);
 
   const logout = useCallback(() => {
+    disconnectSocket();
     setCurrentUser(null);
-    setCurrentRoomId(null);
+    setCurrentRoom(null);
+    // Reconnect socket for next login
+    setTimeout(() => connectSocket(), 100);
   }, []);
 
   const createRoom = useCallback(
     (name: string, problemIds: string[], timerMinutes: number | null) => {
-      if (!currentUser) return "";
-      const id = "room-" + genId();
+      if (!currentUser) return;
+      const socket = getSocket();
       const problems = problemIds.map((pid) => PROBLEMS.find((p) => p.id === pid)!).filter(Boolean);
-      const totalTests = problems.reduce((sum, p) => sum + p.testCases.length, 0);
-      const newRoom: Room = {
-        id,
-        name,
-        problems,
-        participants: [{ id: currentUser.id, username: currentUser.username, status: "active", testsPassed: 0, totalTests }],
-        hostId: currentUser.id,
-        timerSeconds: timerMinutes ? timerMinutes * 60 : null,
-        timerRemaining: timerMinutes ? timerMinutes * 60 : null,
-        isActive: true,
-        chat: [],
-        createdAt: Date.now(),
-        resultsShown: false,
-      };
-      setRooms((prev) => [newRoom, ...prev]);
-      setCurrentRoomId(id);
-      return id;
+      socket.emit("room:create", { name, problems, timerMinutes }, (response: { room?: Room; error?: string }) => {
+        if (response.error) {
+          console.error("Create room error:", response.error);
+          return;
+        }
+        if (response.room) {
+          setCurrentRoom({ ...response.room, chat: response.room.chat || [] });
+        }
+      });
     },
     [currentUser]
   );
@@ -171,87 +192,45 @@ export function RoomProvider({ children }: { children: React.ReactNode }) {
   const joinRoom = useCallback(
     (roomId: string) => {
       if (!currentUser) return;
-      setRooms((prev) =>
-        prev.map((r) => {
-          if (r.id === roomId) {
-            const already = r.participants.find((p) => p.id === currentUser.id);
-            if (already) return r;
-            const totalTests = r.problems.reduce((sum, p) => sum + p.testCases.length, 0);
-            return {
-              ...r,
-              participants: [...r.participants, { id: currentUser.id, username: currentUser.username, status: "active", testsPassed: 0, totalTests }],
-            };
-          }
-          return r;
-        })
-      );
-      setCurrentRoomId(roomId);
+      const socket = getSocket();
+      socket.emit("room:join", { roomId }, (response: { room?: Room; error?: string }) => {
+        if (response.error) {
+          console.error("Join room error:", response.error);
+          return;
+        }
+        if (response.room) {
+          setCurrentRoom({ ...response.room, chat: response.room.chat || [] });
+        }
+      });
     },
     [currentUser]
   );
 
   const leaveRoom = useCallback(() => {
-    if (!currentUser || !currentRoomId) return;
-    setRooms((prev) =>
-      prev.map((r) => {
-        if (r.id === currentRoomId) {
-          const newParticipants = r.participants.filter((p) => p.id !== currentUser.id);
-          // If user was host, transfer to next participant
-          let newHostId = r.hostId;
-          if (r.hostId === currentUser.id && newParticipants.length > 0) {
-            newHostId = newParticipants[newParticipants.length - 1].id;
-          }
-          return { ...r, participants: newParticipants, hostId: newHostId };
-        }
-        return r;
-      })
-    );
-    setCurrentRoomId(null);
-  }, [currentUser, currentRoomId]);
+    const socket = getSocket();
+    socket.emit("room:leave");
+    setCurrentRoom(null);
+    fetchRooms();
+  }, [fetchRooms]);
 
-  const sendMessage = useCallback(
-    (text: string) => {
-      if (!currentUser || !currentRoomId) return;
-      const msg: ChatMessage = { id: genId(), username: currentUser.username, text, timestamp: Date.now() };
-      setRooms((prev) =>
-        prev.map((r) => (r.id === currentRoomId ? { ...r, chat: [...r.chat, msg] } : r))
-      );
-    },
-    [currentUser, currentRoomId]
-  );
+  const sendMessage = useCallback((text: string) => {
+    const socket = getSocket();
+    socket.emit("chat:send", { text });
+  }, []);
 
-  const updateTestResults = useCallback(
-    (passed: number, total: number) => {
-      if (!currentUser || !currentRoomId) return;
-      setRooms((prev) =>
-        prev.map((r) => {
-          if (r.id === currentRoomId) {
-            return {
-              ...r,
-              participants: r.participants.map((p) =>
-                p.id === currentUser.id
-                  ? { ...p, testsPassed: passed, totalTests: total, solvedAt: passed === total ? (p.solvedAt || Date.now()) : undefined }
-                  : p
-              ),
-            };
-          }
-          return r;
-        })
-      );
-    },
-    [currentUser, currentRoomId]
-  );
+  const updateTestResults = useCallback((passed: number, total: number) => {
+    const socket = getSocket();
+    socket.emit("code:test_results", { passed, total });
+  }, []);
 
   const declareResults = useCallback(() => {
-    if (!currentRoomId) return;
-    setRooms((prev) =>
-      prev.map((r) => (r.id === currentRoomId ? { ...r, isActive: false, resultsShown: true } : r))
-    );
-  }, [currentRoomId]);
+    const socket = getSocket();
+    socket.emit("room:declare_results");
+  }, []);
 
   return (
     <RoomContext.Provider
-      value={{ rooms, currentUser, currentRoom, login, logout, createRoom, joinRoom, leaveRoom, sendMessage, updateTestResults, declareResults }}
+      value={{ rooms, currentUser, currentRoom, login, logout, createRoom, joinRoom, leaveRoom, sendMessage, updateTestResults, declareResults, connected }}
     >
       {children}
     </RoomContext.Provider>
