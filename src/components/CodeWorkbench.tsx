@@ -31,83 +31,154 @@ export default function CodeWorkbench() {
 
   const currentLang = LANGUAGES.find((l) => l.id === language)!;
 
-  const runCode = useCallback(() => {
+  const runCodeRemote = useCallback(async (sourceCode: string, langId: number, stdin: string) => {
+    const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
+    const res = await fetch(`${backendUrl}/api/execute`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_code: sourceCode, language_id: langId, stdin }),
+    });
+    return res.json();
+  }, []);
+
+  const runCode = useCallback(async () => {
     if (!problem) return;
     setIsRunning(true);
     setConsoleOutput([]);
     setTestResults([]);
 
-    // For JS/TS, run locally. For other languages, show a message about Judge0.
-    if (language !== "javascript" && language !== "typescript") {
+    // For JS/TS, run locally in the browser
+    if (language === "javascript" || language === "typescript") {
       setTimeout(() => {
-        setConsoleOutput([
-          `Running ${currentLang.name} requires a code execution backend.`,
-          "",
-          "To enable multi-language execution:",
-          "1. Self-host Judge0 CE (https://github.com/judge0/judge0)",
-          `2. Or use the public API with language ID: ${currentLang.judge0Id}`,
-          "",
-          "The backend server supports forwarding to Judge0.",
-          "Set JUDGE0_URL in your server environment.",
-          "",
-          "For now, JavaScript execution is available locally.",
-        ]);
+        const logs: string[] = [];
+        const results: TestResult[] = [];
+
+        try {
+          const fnNameMatch = problem.starterCode.javascript.match(/function\s+(\w+)/);
+          const fnName = fnNameMatch?.[1];
+
+          const fn = new Function(
+            "console",
+            code + (fnName ? `\nreturn typeof ${fnName} !== 'undefined' ? ${fnName} : null;` : "\nreturn null;")
+          );
+
+          const mockConsole = {
+            log: (...args: unknown[]) => logs.push(args.map(String).join(" ")),
+            error: (...args: unknown[]) => logs.push("ERROR: " + args.map(String).join(" ")),
+            warn: (...args: unknown[]) => logs.push("WARN: " + args.map(String).join(" ")),
+          };
+
+          const userFn = fn(mockConsole);
+
+          if (!userFn) {
+            logs.push("Error: Function not found. Make sure your function is defined.");
+          } else {
+            problem.testCases.forEach((tc, i) => {
+              try {
+                const args = tc.input.split("\n").map((line) => {
+                  try { return JSON.parse(line); } catch { return line; }
+                });
+                const result = userFn(...args);
+                const resultStr = JSON.stringify(result) ?? String(result);
+                const passed = resultStr === tc.expectedOutput;
+                results.push({ id: tc.id, passed, input: tc.input, expected: tc.expectedOutput, actual: resultStr });
+                logs.push(`Test ${i + 1}: ${passed ? "PASSED ✓" : "FAILED ✗"} | Expected: ${tc.expectedOutput} | Got: ${resultStr}`);
+              } catch (err) {
+                results.push({ id: tc.id, passed: false, input: tc.input, expected: tc.expectedOutput, actual: String(err) });
+                logs.push(`Test ${i + 1}: ERROR - ${err}`);
+              }
+            });
+          }
+        } catch (err) {
+          logs.push(`Compilation Error: ${err}`);
+        }
+
+        setConsoleOutput(logs);
+        setTestResults(results);
+        const passed = results.filter((r) => r.passed).length;
+        updateTestResults(passed, results.length);
         setIsRunning(false);
       }, 300);
       return;
     }
 
-    setTimeout(() => {
-      const logs: string[] = [];
-      const results: TestResult[] = [];
+    // For other languages, use Judge0 via backend
+    const logs: string[] = [];
+    const results: TestResult[] = [];
+    logs.push(`Running ${currentLang.name} via Judge0...`);
+    setConsoleOutput([...logs]);
 
-      try {
-        const fnNameMatch = problem.starterCode.javascript.match(/function\s+(\w+)/);
-        const fnName = fnNameMatch?.[1];
+    try {
+      for (let i = 0; i < problem.testCases.length; i++) {
+        const tc = problem.testCases[i];
+        const fullCode = buildExecutableCode(code, language, tc.input);
 
-        const fn = new Function(
-          "console",
-          code + (fnName ? `\nreturn typeof ${fnName} !== 'undefined' ? ${fnName} : null;` : "\nreturn null;")
-        );
+        const result = await runCodeRemote(fullCode, currentLang.judge0Id, "");
 
-        const mockConsole = {
-          log: (...args: unknown[]) => logs.push(args.map(String).join(" ")),
-          error: (...args: unknown[]) => logs.push("ERROR: " + args.map(String).join(" ")),
-          warn: (...args: unknown[]) => logs.push("WARN: " + args.map(String).join(" ")),
-        };
-
-        const userFn = fn(mockConsole);
-
-        if (!userFn) {
-          logs.push("Error: Function not found. Make sure your function is defined.");
-        } else {
-          problem.testCases.forEach((tc, i) => {
-            try {
-              const args = tc.input.split("\n").map((line) => {
-                try { return JSON.parse(line); } catch { return line; }
-              });
-              const result = userFn(...args);
-              const resultStr = JSON.stringify(result) ?? String(result);
-              const passed = resultStr === tc.expectedOutput;
-              results.push({ id: tc.id, passed, input: tc.input, expected: tc.expectedOutput, actual: resultStr });
-              logs.push(`Test ${i + 1}: ${passed ? "PASSED ✓" : "FAILED ✗"} | Expected: ${tc.expectedOutput} | Got: ${resultStr}`);
-            } catch (err) {
-              results.push({ id: tc.id, passed: false, input: tc.input, expected: tc.expectedOutput, actual: String(err) });
-              logs.push(`Test ${i + 1}: ERROR - ${err}`);
-            }
-          });
+        if (result.error) {
+          logs.push(`⚠ ${result.error}`);
+          if (result.hint) logs.push(result.hint);
+          results.push({ id: tc.id, passed: false, input: tc.input, expected: tc.expectedOutput, actual: result.error });
+          break;
         }
-      } catch (err) {
-        logs.push(`Compilation Error: ${err}`);
-      }
 
-      setConsoleOutput(logs);
-      setTestResults(results);
-      const passed = results.filter((r) => r.passed).length;
-      updateTestResults(passed, results.length);
-      setIsRunning(false);
-    }, 300);
-  }, [code, problem, updateTestResults, language, currentLang]);
+        if (result.compile_output) {
+          logs.push(`Compile Error: ${result.compile_output}`);
+          results.push({ id: tc.id, passed: false, input: tc.input, expected: tc.expectedOutput, actual: result.compile_output });
+          break;
+        }
+
+        if (result.stderr) {
+          logs.push(`Runtime Error: ${result.stderr}`);
+          results.push({ id: tc.id, passed: false, input: tc.input, expected: tc.expectedOutput, actual: result.stderr });
+          continue;
+        }
+
+        const stdout = (result.stdout || "").trim();
+        const passed = stdout === tc.expectedOutput;
+        results.push({ id: tc.id, passed, input: tc.input, expected: tc.expectedOutput, actual: stdout });
+        logs.push(`Test ${i + 1}: ${passed ? "PASSED ✓" : "FAILED ✗"} | Expected: ${tc.expectedOutput} | Got: ${stdout}`);
+        setConsoleOutput([...logs]);
+      }
+    } catch (err) {
+      logs.push(`Network Error: ${err}. Is your backend running with JUDGE0_URL configured?`);
+    }
+
+    setConsoleOutput([...logs]);
+    setTestResults(results);
+    const passed = results.filter((r) => r.passed).length;
+    updateTestResults(passed, results.length);
+    setIsRunning(false);
+  }, [code, problem, updateTestResults, language, currentLang, runCodeRemote]);
+
+  // Helper: wrap user code with test-case input parsing and print the result
+  function buildExecutableCode(userCode: string, lang: string, input: string): string {
+    const fnNameMatch = userCode.match(/def\s+(\w+)|func\s+(\w+)|public\s+static\s+\w+\s+(\w+)|(\w+)\s*\(/);
+    const lines = input.split("\n");
+    const args = lines.map(l => l.trim());
+
+    if (lang === "python") {
+      return `import json\n${userCode}\n\n# Auto-run\nargs = ${JSON.stringify(args)}\nparsed = [json.loads(a) for a in args]\nresult = ${getFnName(userCode, "python")}(*parsed)\nprint(json.dumps(result))`;
+    }
+    if (lang === "go") {
+      return userCode; // Go needs main() — starter code should include it
+    }
+    if (lang === "java") {
+      return userCode; // Java needs main() — starter code should include it
+    }
+    if (lang === "cpp") {
+      return userCode; // C++ needs main() — starter code should include it
+    }
+    return userCode;
+  }
+
+  function getFnName(code: string, lang: string): string {
+    if (lang === "python") {
+      const m = code.match(/def\s+(\w+)/);
+      return m?.[1] || "solution";
+    }
+    return "solution";
+  }
 
   if (!problem) return null;
 
