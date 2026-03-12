@@ -102,10 +102,10 @@ export default function CodeWorkbench() {
       return;
     }
 
-    // For other languages, use Judge0 via backend
+    // For other languages, use Piston via backend
     const logs: string[] = [];
     const results: TestResult[] = [];
-    logs.push(`Running ${currentLang.name} via Judge0...`);
+    logs.push(`Running ${currentLang.name} via Piston...`);
     setConsoleOutput([...logs]);
 
     try {
@@ -113,7 +113,7 @@ export default function CodeWorkbench() {
         const tc = problem.testCases[i];
         const fullCode = buildExecutableCode(code, language, tc.input);
 
-        const result = await runCodeRemote(fullCode, currentLang.judge0Id, "");
+        const result = await runCodeRemote(fullCode, currentLang.pistonLang, currentLang.pistonVersion, "");
 
         if (result.error) {
           logs.push(`⚠ ${result.error}`);
