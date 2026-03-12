@@ -31,12 +31,12 @@ export default function CodeWorkbench() {
 
   const currentLang = LANGUAGES.find((l) => l.id === language)!;
 
-  const runCodeRemote = useCallback(async (sourceCode: string, langId: number, stdin: string) => {
+  const runCodeRemote = useCallback(async (sourceCode: string, lang: string, version: string, stdin: string) => {
     const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:3001";
     const res = await fetch(`${backendUrl}/api/execute`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ source_code: sourceCode, language_id: langId, stdin }),
+      body: JSON.stringify({ source_code: sourceCode, language: lang, version, stdin }),
     });
     return res.json();
   }, []);
