@@ -24,12 +24,12 @@ export interface Problem {
 }
 
 export const LANGUAGES = [
-  { id: "javascript", name: "JavaScript", judge0Id: 63 },
-  { id: "python", name: "Python 3", judge0Id: 71 },
-  { id: "typescript", name: "TypeScript", judge0Id: 74 },
-  { id: "cpp", name: "C++", judge0Id: 54 },
-  { id: "java", name: "Java", judge0Id: 62 },
-  { id: "go", name: "Go", judge0Id: 60 },
+  { id: "javascript", name: "JavaScript", pistonLang: "javascript", pistonVersion: "18.15.0" },
+  { id: "python", name: "Python 3", pistonLang: "python", pistonVersion: "3.10.0" },
+  { id: "typescript", name: "TypeScript", pistonLang: "typescript", pistonVersion: "5.0.3" },
+  { id: "cpp", name: "C++", pistonLang: "c++", pistonVersion: "10.2.0" },
+  { id: "java", name: "Java", pistonLang: "java", pistonVersion: "15.0.2" },
+  { id: "go", name: "Go", pistonLang: "go", pistonVersion: "1.16.2" },
 ] as const;
 
 export type LanguageId = (typeof LANGUAGES)[number]["id"];

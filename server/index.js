@@ -74,46 +74,42 @@ setInterval(() => {
   }
 }, 300000);
 
-// ─── Judge0 Code Execution ─────────────────────────────────────────────────────
-const JUDGE0_URL = process.env.JUDGE0_URL || "";
-const JUDGE0_API_KEY = process.env.JUDGE0_API_KEY || "";
+// ─── Piston Code Execution ─────────────────────────────────────────────────────
+const PISTON_URL = process.env.PISTON_URL || "https://emkc.org/api/v2/piston";
 
 app.post("/api/execute", async (req, res) => {
-  if (!JUDGE0_URL) {
-    return res.status(503).json({
-      error: "Judge0 not configured. Set JUDGE0_URL environment variable.",
-      hint: "Self-host: docker-compose up from https://github.com/judge0/judge0 | Or use RapidAPI: https://rapidapi.com/judge0-official/api/judge0-ce",
-    });
-  }
-
-  const { source_code, language_id, stdin } = req.body;
-  if (!source_code || !language_id) {
-    return res.status(400).json({ error: "source_code and language_id are required" });
+  const { source_code, language, version, stdin } = req.body;
+  if (!source_code || !language) {
+    return res.status(400).json({ error: "source_code and language are required" });
   }
 
   try {
-    const headers = { "Content-Type": "application/json" };
-    if (JUDGE0_API_KEY) {
-      headers["X-RapidAPI-Key"] = JUDGE0_API_KEY;
-      headers["X-RapidAPI-Host"] = "judge0-ce.p.rapidapi.com";
-    }
-
-    // Submit
-    const submitRes = await fetch(`${JUDGE0_URL}/submissions?base64_encoded=false&wait=true&fields=stdout,stderr,status,compile_output,time,memory`, {
+    const pistonRes = await fetch(`${PISTON_URL}/execute`, {
       method: "POST",
-      headers,
-      body: JSON.stringify({ source_code, language_id, stdin: stdin || "" }),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        language,
+        version: version || "*",
+        files: [{ content: source_code }],
+        stdin: stdin || "",
+      }),
     });
 
-    if (!submitRes.ok) {
-      const text = await submitRes.text();
-      return res.status(submitRes.status).json({ error: `Judge0 error: ${text}` });
+    if (!pistonRes.ok) {
+      const text = await pistonRes.text();
+      return res.status(pistonRes.status).json({ error: `Piston error: ${text}` });
     }
 
-    const result = await submitRes.json();
-    res.json(result);
+    const result = await pistonRes.json();
+    const run = result.run || {};
+    res.json({
+      stdout: run.stdout || "",
+      stderr: run.stderr || "",
+      compile_output: result.compile?.stderr || "",
+      status: { description: run.code === 0 ? "Accepted" : "Error" },
+    });
   } catch (err) {
-    console.error("Judge0 execution error:", err);
+    console.error("Piston execution error:", err);
     res.status(500).json({ error: err.message });
   }
 });
