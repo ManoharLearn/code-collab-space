@@ -24,6 +24,7 @@ npm start
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3001` | Server port |
+| `PISTON_URL` | `https://emkc.org/api/v2/piston` | Piston API URL (public or self-hosted) |
 
 ## API
 
